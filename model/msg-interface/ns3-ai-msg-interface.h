@@ -375,7 +375,7 @@ class Ns3AiMsgInterface : public Singleton<Ns3AiMsgInterface>
     bool m_isMemoryCreator;
     bool m_useVector;
     bool m_handleFinish;
-    uint32_t m_size = 4096;
+    uint32_t m_size = 8192;
     std::string m_trailName = "single_trial";
 
     std::string BuildSegmentName() const {

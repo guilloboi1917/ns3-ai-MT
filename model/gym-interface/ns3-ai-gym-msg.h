@@ -22,7 +22,7 @@
 
 #include <stdint.h>
 
-#define MSG_BUFFER_SIZE 1024
+#define MSG_BUFFER_SIZE 2048
 
 struct Ns3AiGymMsg
 {

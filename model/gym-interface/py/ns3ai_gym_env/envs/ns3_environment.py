@@ -14,6 +14,27 @@ from ns3ai_utils import Experiment
 class Ns3Env(gym.Env):
     _created = False
 
+    # Track restart count per env config key so that each process
+    # (re)start gets a unique seed block.
+    _restart_counts: dict[str, int] = {}
+
+    @classmethod
+    def _get_init_run_id(cls, ns3Settings: dict) -> int:
+        """
+        Return a unique runId for this environment (re)start.
+        
+        Uses a class-level counter keyed on the full ns3Settings dict so that
+        Ray worker restarts (which create a fresh ns3Env instance) skip well
+        ahead of the monotonic increment done in reset().
+        """
+        base = int(ns3Settings.get("runId", 0))
+        key = repr(ns3Settings)
+        count = cls._restart_counts.get(key, 0)
+        cls._restart_counts[key] = count + 1
+        # Reserve 10 000 seeds per init to avoid collisions with
+        # reset()'s runId += 1 increment.
+        return base + count * 10000
+
     def _create_space(self, spaceDesc):
         space = None
         if spaceDesc.type == pb.Discrete:
@@ -284,7 +305,7 @@ class Ns3Env(gym.Env):
         ns3Path: str,
         ns3Settings: dict[str, Any] | None = None,
         debug: bool = False,
-        shmSize=4096,
+        shmSize=8192,
         segName="ns3-ai",  # the names for the shared memory segments used by boost
         trial_name: str | None = None,
     ):
@@ -320,6 +341,9 @@ class Ns3Env(gym.Env):
         self.gameOver = False
         self.gameOverReason = None
         self.extraInfo = None
+
+        # Override runId so each (re)start gets a unique seed block
+        self.ns3Settings["runId"] = self._get_init_run_id(self.ns3Settings)
 
         self.msgInterface = self.exp.run(setting=self.ns3Settings, show_output=True)
         self.initialize_env()
