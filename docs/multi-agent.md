@@ -269,15 +269,15 @@ signaled:
 ``` cpp
 Simulator::Stop(Seconds(60));
 Simulator::Run();
-Simulator::Destroy();
-// finish the environment without giving an extra reward and
-// without providing extra information
+// finish the environment before destroying the simulator
 OpenGymMultiAgentInterface::Get()->NotifySimulationEnd(0, {});
+Simulator::Destroy();
 ```
 >[!WARNING]
->The call to `NotifySimulationEnd` must be executed as the very last
->method in the simulation script as it will destroy the C++ process once
->the information has been passed to the Python environment.
+>The call to `NotifySimulationEnd` must be executed **before**
+>`Simulator::Destroy()`, and as the very last method in the simulation
+>script as it will destroy the C++ process once the information has been
+>passed to the Python environment.
 >It is also advised to include it in every experiment because it ensures
 >that the RL algorithms understand that the episode has been truncated
 >when the simulation time is over.

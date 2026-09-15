@@ -29,7 +29,7 @@ import psutil
 logger = logging.getLogger(__name__)
 
 
-SIMULATION_EARLY_ENDING = 0.5   # wait and see if the subprocess is running after creation
+SIMULATION_EARLY_ENDING = 2.0   # wait and see if the subprocess is running after creation
 
 
 def get_setting(setting_map: dict[str, Any]) -> str:
@@ -140,7 +140,7 @@ class Experiment:
         self.segName = segName
 
         self.msgInterface = msgModule.Ns3AiMsgInterfaceImpl(
-            True,
+            True,  # Python creates shared memory, ns-3 opens it
             self.useVector,
             self.handleFinish,
             self.shmSize,
@@ -168,6 +168,7 @@ class Experiment:
     # \param[in] setting : ns3 script input parameters(default : None)
     # \param[in] show_output : whether to show output or not(default : False)
     def run(self, setting: dict[str, Any] = None, show_output=False):
+        import os
         self.kill()
         self.simCmd, self.proc = run_single_ns3(
             "./",
@@ -176,17 +177,45 @@ class Experiment:
             show_output=show_output,
             debug=self.debug,
         )
-        logger.info("ns3ai_utils: Running ns-3 with: %s", self.simCmd)
+        pid = self.proc.pid if self.proc else -1
+        logger.info("ns3ai_utils: Running ns-3 with: %s (pid=%d)", self.simCmd, pid)
+        print(f"[NS3-PROXY] run() started ns-3 pid={pid} cmd={self.simCmd[:120]}", flush=True)
         # exit if an early error occurred, such as wrong target name
         time.sleep(SIMULATION_EARLY_ENDING)
         if not self.isalive():
             logger.info('ns3ai_utils: Subprocess died very early')
-            exit(1)
+            print(f"[NS3-PROXY] run() FAILED — ns-3 pid={pid} died within {SIMULATION_EARLY_ENDING}s", flush=True)
+            # Check for leftover shm
+            shm_path = f"/dev/shm/{self.segName}"
+            print(f"[NS3-PROXY]   shm exists: {os.path.exists(shm_path)}", flush=True)
+            if os.path.exists(shm_path):
+                import glob
+                all_shm = glob.glob("/dev/shm/ns3-ai_*")
+                print(f"[NS3-PROXY]   all ns3-ai shm segments: {all_shm}", flush=True)
+            raise RuntimeError(
+                f"ns-3 subprocess died within {SIMULATION_EARLY_ENDING}s. "
+                f"Check shared memory at /dev/shm/{self.segName}"
+            )
+        print(f"[NS3-PROXY] run() OK — ns-3 pid={pid} alive after {SIMULATION_EARLY_ENDING}s", flush=True)
         return self.msgInterface
 
     def kill(self):
-        if self.proc and self.isalive():
-            kill_proc_tree(self.proc)
+        if self.proc:
+            if self.isalive():
+                kill_proc_tree(self.proc)
+            else:
+                # Process already exited (e.g. shell from shell=True exited
+                # before its child). Try to kill any orphaned children by PID.
+                try:
+                    parent = psutil.Process(self.proc.pid)
+                    for c in parent.children(recursive=True):
+                        try:
+                            c.kill()
+                            c.wait(timeout=1)
+                        except Exception:
+                            continue
+                except Exception:
+                    pass
             self.proc = None
             self.simCmd = None
 

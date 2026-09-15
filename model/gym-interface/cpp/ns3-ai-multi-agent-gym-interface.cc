@@ -184,7 +184,8 @@ OpenGymMultiAgentInterface::NotifyCurrentState(
     // first step after reset is called without actions, just to get current state
     ns3_ai_gym::DataContainer actDataContainerPbMsg = envActMsg.actdata();
     auto action = OpenGymDataContainer::CreateFromDataContainerPbMsg(actDataContainerPbMsg);
-    Simulator::Schedule(actionDelay, actionCallback.Bind(action));
+    // TEMPORARY: call directly instead of scheduling
+    actionCallback(action);
 }
 
 void

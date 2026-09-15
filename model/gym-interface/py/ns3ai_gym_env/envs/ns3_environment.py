@@ -171,14 +171,22 @@ class Ns3Env(gym.Env):
         return True
 
     def rx_env_state(self):
+        import time as _time
         if self.newStateRx:
             return
 
+        # Check ns-3 alive before blocking
+        if self.exp.proc and not self.exp.isalive():
+            raise RuntimeError(f"ns-3 process died before base rx_env_state PyRecvBegin")
+
+        t0 = _time.monotonic()
         envStateMsg = pb.EnvStateMsg()
         self.msgInterface.PyRecvBegin()
+        t1 = _time.monotonic()
         request = self.msgInterface.GetCpp2PyStruct().get_buffer()
         envStateMsg.ParseFromString(request)
         self.msgInterface.PyRecvEnd()
+        t2 = _time.monotonic()
 
         self.obsData = self._create_data(envStateMsg.obsData)
         self.reward = envStateMsg.reward
@@ -275,6 +283,10 @@ class Ns3Env(gym.Env):
     def send_actions(self, actions):
         reply = pb.EnvActMsg()
 
+        # Check ns-3 alive before blocking
+        if self.exp.proc and not self.exp.isalive():
+            raise RuntimeError(f"ns-3 process died before base send_actions")
+
         actionMsg = self._pack_data(actions, self.action_space)
         reply.actData.CopyFrom(actionMsg)
 
@@ -353,22 +365,42 @@ class Ns3Env(gym.Env):
         self.envDirty = False
 
     def step(self, actions):
+        # Check ns-3 is alive BEFORE any blocking call
+        if self.exp.proc and not self.exp.isalive():
+            raise RuntimeError(
+                f"ns-3 process {self.exp.proc.pid} died during step() at step_count={getattr(self, '_step_count', 0)}"
+            )
+
         self.send_actions(actions)
         self.rx_env_state()
         self.envDirty = True
-        return self.get_state()
+        result = self.get_state()
+        if not hasattr(self, '_step_count'):
+            self._step_count = 0
+        self._step_count += 1
+        obs, reward, terminated, truncated, extraInfo = result
+        if terminated or truncated:
+            self._step_count = 0
+        return result
 
     def reset(self, seed=None, options=None):
+        import time as _time, os as _os
+        t0 = _time.monotonic()
+        print(f"[ENV-RESET] start trial={self.trial_name} envDirty={self.envDirty} gameOver={self.gameOver} hasMsgIntf={self.msgInterface is not None}", flush=True)
         if not self.envDirty:
             obs = self.get_obs()
+            print(f"[ENV-RESET] early return — envDirty=False, returning stale obs", flush=True)
             return obs, {}
 
         # not using self.exp.kill() here in order for semaphores to reset to initial state
         if not self.gameOver:
+            print(f"[ENV-RESET] gameOver=False — sending close command to old ns-3", flush=True)
             self.rx_env_state()
             self.send_close_command()
             with suppress(TimeoutExpired):
                 self.exp.proc.wait(2)
+        else:
+            print(f"[ENV-RESET] gameOver=True — old ns-3 already done, skipping close", flush=True)
 
         self.msgInterface = None
         self.newStateRx = False
@@ -378,17 +410,37 @@ class Ns3Env(gym.Env):
         self.gameOverReason = None
         self.extraInfo = None
 
-        # Allow the user to increment the run number on environment reset. This way the random variables used inside the simulation will use different values. This is required for reproducibility and to avoid overfitting.
+        # Allow the user to increment the run number on environment reset.
         if "runId" in self.ns3Settings:
             self.ns3Settings["runId"] = int(self.ns3Settings["runId"]) + 1
 
-        self.msgInterface = self.exp.run(setting=self.ns3Settings, show_output=True)
-        self.initialize_env()
+        print(f"[ENV-RESET] starting new ns-3 runId={self.ns3Settings.get('runId')} shm_exists={_os.path.exists('/dev/shm/' + self.exp.segName)}", flush=True)
+        try:
+            self.msgInterface = self.exp.run(setting=self.ns3Settings, show_output=True)
+        except RuntimeError as e:
+            print(f"[ENV-RESET] FATAL — exp.run() failed: {e}", flush=True)
+            raise
+        t_run = _time.monotonic()
+        print(f"[ENV-RESET] run() returned in {t_run-t0:.3f}s", flush=True)
+        try:
+            self.initialize_env()
+        except Exception as e:
+            print(f"[ENV-RESET] FATAL — initialize_env() failed: {e}", flush=True)
+            raise
+        t_init = _time.monotonic()
+        print(f"[ENV-RESET] init_env in {t_init-t_run:.3f}s", flush=True)
         # get first observations
-        self.rx_env_state()
+        try:
+            self.rx_env_state()
+        except Exception as e:
+            print(f"[ENV-RESET] FATAL — rx_env_state() failed: {e}", flush=True)
+            raise
+        t_rx = _time.monotonic()
+        print(f"[ENV-RESET] rx_env_state in {t_rx-t_init:.3f}s — gameOver={self.gameOver}", flush=True)
         self.envDirty = False
 
         obs = self.get_obs()
+        print(f"[ENV-RESET] done — returning obs in {_time.monotonic()-t0:.3f}s", flush=True)
         return obs, {}
 
     def render(self, mode='human'):
@@ -405,9 +457,8 @@ class Ns3Env(gym.Env):
             with suppress(TimeoutExpired):
                 self.exp.proc.wait(2)
 
-        # environment is not needed anymore, so kill subprocess in a straightforward way
+        # Kill subprocess and clean up shared memory
         self.exp.kill()
-        # destroy the message interface and its shared memory segment
         del self.exp
 
     def __getstate__(self):
