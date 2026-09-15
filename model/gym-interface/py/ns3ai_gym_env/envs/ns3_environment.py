@@ -212,7 +212,8 @@ class Ns3Env(gym.Env):
         if spaceType == spaces.Discrete:
             dataContainer.type = pb.Discrete
             discreteContainerPb = pb.DiscreteDataContainer()
-            discreteContainerPb.data = actions
+            # RLlib may pass numpy scalars (e.g. np.int32(3)); protobuf needs native int
+            discreteContainerPb.data = int(actions)
             dataContainer.data.Pack(discreteContainerPb)
 
         elif spaceType == spaces.Box:
